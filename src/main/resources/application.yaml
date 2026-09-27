@@ -1,0 +1,17 @@
+spring:
+  application:
+    name: flash_sale_system
+  datasource:
+    url: jdbc:postgresql://localhost:5432/flash_sale
+    username: ${DB_USERNAME:postgres}
+    password: ${DB_PASSWORD:postgres}
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: false  #for test concurrency: false
+management:
+  health:
+    redis.enabled: false
+    rabbit.enabled: false
+server:
+    port: 8081
