@@ -1,11 +1,79 @@
-success=6 lockFail=44 soldOut=0 other=0 remaining=4
-success=10 lockFail=90 soldOut=0 other=0 remaining=0
-success=10 lockFail=89 soldOut=1 other=0 remaining=0
+FLASH SALE SYSTEM - CONCURRENCY & LOAD TEST RESULTS
+====================================================
 
- 
-  K6 client = 1000，100 products
-  █ TOTAL RESULTS
+Environment
+-----------
+- App:        Spring Boot 4.1.1, Java 21, embedded Tomcat (default 200 threads), HikariCP (default 10 connections)
+- Database:   PostgreSQL 18 (local)
+- Cache:      Redis 7 (Docker)
+- Load tool:  k6 (Docker, grafana/k6), scenario "per-vu-iterations": 1000 VUs x 1 request, all fired at once
+- Endpoint:   POST /seckill/{productId}/{userId}, each VU uses a distinct userId
+- Machine:    Windows 11, single host (app, DB, Redis and k6 on the same machine)
 
+
+1. JUnit concurrency test (correctness)
+---------------------------------------
+Phase 1 - optimistic locking (@Version), 1 product, N threads fired simultaneously via CountDownLatch
+
+  Threads | Stock | Success | Lock conflict | Sold out | Other | Remaining | Oversold
+  --------+-------+---------+---------------+----------+-------+-----------+---------
+     50   |   10  |    6    |      44       |    0     |   0   |     4     |    0
+    100   |   10  |   10    |      90       |    0     |   0   |     0     |    0
+    100   |   10  |   10    |      89       |    1     |   0   |     0     |    0
+
+  Note: with 50 threads only 6 of 10 items sold - optimistic locking under-sells
+        because most requests fail on version conflicts, not on lack of stock.
+
+
+2. k6 load test (1000 concurrent users)
+---------------------------------------
+
+  Phase | Approach         | Stock | Success | Lock conflict | Sold out | Failed (non-2xx) | p95      | Throughput
+  ------+------------------+-------+---------+---------------+----------+------------------+----------+-----------
+    1   | Optimistic lock  |  100  |   100   |      822      |    78    |   900 (90%)      | 1.85 s   | 437 req/s
+    2   | Redis + Lua      |  100  |   100   |       0       |   900    |   900 (90%)      | 925 ms   | 777 req/s
+    2   | Redis + Lua      | 1000  |  1000   |       0       |    0     |     0 (0%)       | 977 ms   | 707 req/s
+    2*  | Redis + Lua      |  100  |   100   |       0       |   900    |   900 (90%)      | 169 ms   | invalid*
+
+  Oversold in all runs: 0
+  Data consistency (phase 2): Redis stock = DB stock = 0, Redis user set size = order count = success count
+
+  * Run marked 2* reported negative rates (e.g. -38819 req/s): the Docker VM clock
+    jumped during the test, so throughput is invalid and latency is unreliable.
+    Needs to be re-run before being quoted.
+
+  "Failed (non-2xx)" is k6's http_req_failed. For a flash sale this mostly counts
+  expected business rejections (HTTP 409 sold out / conflict), not server errors.
+
+
+3. Findings
+-----------
+Phase 1 -> Phase 2
+- Lock conflicts eliminated: 822 -> 0. The only rejection reason left is "sold out".
+- No under-selling: with stock 1000 and 1000 users, all 1000 purchases succeeded (0% failure).
+- p95 latency reduced by ~50% (1.85 s -> 925 ms); throughput up ~78% (437 -> 777 req/s).
+
+Remaining bottleneck
+- Requests that only touch Redis (sold out) still had a median of ~470 ms, while the
+  fastest request took 33 ms. Time is spent queueing, not processing.
+- Winning requests still write to the database synchronously (UPDATE on the same hot row
+  + INSERT) through only 10 DB connections. They hold Tomcat threads while waiting,
+  so Redis-only requests queue behind them.
+- Next step (Phase 3): asynchronous order creation via a message queue - return
+  immediately after the Redis check and let a consumer write orders to the DB.
+
+TODO
+- Re-run phase 1 with stock 1000 to quantify under-selling at the HTTP level.
+- Re-run the invalid 2* run.
+- Methodology: restart app, 1 warm-up run (discarded), then 3 measured runs, report the median.
+
+
+====================================================
+APPENDIX - raw k6 output
+====================================================
+
+Phase 1 - optimistic locking, 1000 users, stock 100
+---------------------------------------------------
     CUSTOM
     seckill_lock_fail..............: 822    359.448982/s
     seckill_sold_out...............: 78     34.108298/s
@@ -26,3 +94,71 @@ success=10 lockFail=89 soldOut=1 other=0 remaining=0
     NETWORK
     data_received..................: 551 kB 241 kB/s
     data_sent......................: 114 kB 50 kB/s
+
+
+Phase 2 - Redis + Lua, 1000 users, stock 100
+--------------------------------------------
+    CUSTOM
+    seckill_sold_out...............: 900    699.262412/s
+    seckill_success................: 100    77.695824/s
+
+    HTTP
+    http_req_duration..............: avg=505.49ms min=365.14ms med=470.07ms max=1.05s p(90)=595.29ms p(95)=924.76ms
+      { expected_response:true }...: avg=931.76ms min=774.8ms  med=925.26ms max=1.05s p(90)=1.04s    p(95)=1.05s
+    http_req_failed................: 90.00% 900 out of 1000
+    http_reqs......................: 1000   776.958235/s
+
+    EXECUTION
+    iteration_duration.............: avg=677.17ms min=461.37ms med=645.32ms max=1.28s p(90)=868.26ms p(95)=1.09s
+    iterations.....................: 1000   776.958235/s
+    vus............................: 272    min=272         max=272
+    vus_max........................: 1000   min=1000        max=1000
+
+    NETWORK
+    data_received..................: 406 kB 315 kB/s
+    data_sent......................: 114 kB 89 kB/s
+
+
+Phase 2 - Redis + Lua, 1000 users, stock 1000
+---------------------------------------------
+    CUSTOM
+    seckill_success................: 1000   707.424715/s
+
+    HTTP
+    http_req_duration..............: avg=612.6ms  min=33.09ms med=683.6ms  max=1.01s p(90)=941.5ms p(95)=976.74ms
+      { expected_response:true }...: avg=612.6ms  min=33.09ms med=683.6ms  max=1.01s p(90)=941.5ms p(95)=976.74ms
+    http_req_failed................: 0.00%  0 out of 1000
+    http_reqs......................: 1000   707.424715/s
+
+    EXECUTION
+    iteration_duration.............: avg=722.87ms min=99.05ms med=750.66ms max=1.31s p(90)=1.08s   p(95)=1.12s
+    iterations.....................: 1000   707.424715/s
+    vus............................: 537    min=537       max=537
+    vus_max........................: 1000   min=1000      max=1000
+
+    NETWORK
+    data_received..................: 467 kB 330 kB/s
+    data_sent......................: 114 kB 81 kB/s
+
+
+Phase 2* - Redis + Lua, 1000 users, stock 100 (INVALID - clock skew, negative rates)
+------------------------------------------------------------------------------------
+    CUSTOM
+    seckill_sold_out...............: 900    -34937.193795/s
+    seckill_success................: 100    -3881.910422/s
+
+    HTTP
+    http_req_duration..............: avg=77.48ms  min=3.43ms med=66.12ms  max=278.66ms p(90)=140.59ms p(95)=168.83ms
+      { expected_response:true }...: avg=161.48ms min=5.12ms med=170.73ms max=278.66ms p(90)=253.12ms p(95)=259.21ms
+    http_req_failed................: 90.00% 900 out of 1000
+    http_reqs......................: 1000   -38819.104217/s
+
+    EXECUTION
+    iteration_duration.............: avg=314.28ms min=69.1ms med=264.88ms max=1.01s    p(90)=495.5ms  p(95)=893.23ms
+    iterations.....................: 1000   -38819.104217/s
+    vus............................: 48     min=48                  max=48
+    vus_max........................: 1000   min=1000                max=1000
+
+    NETWORK
+    data_received..................: 406 kB -15743864.097111113 B/s
+    data_sent......................: 114 kB -4421224.236536914 B/s

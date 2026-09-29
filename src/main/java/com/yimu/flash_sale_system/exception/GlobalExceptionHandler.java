@@ -39,4 +39,9 @@ public class GlobalExceptionHandler {
         return ProblemDetail.forStatusAndDetail(HttpStatus.UNAUTHORIZED, ex.getMessage());
     }
 
+    @ExceptionHandler(SeckillNotStartedException.class)
+    public ProblemDetail handleSeckillNotStarted(SeckillNotStartedException ex) {
+        return ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, ex.getMessage());
+    }
+
 }

@@ -1,0 +1,26 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: flash-sale-redis
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  k6:
+    image: grafana/k6
+    profiles: ["loadtest"]
+    volumes:
+      - ./loadtest:/scripts
+    command: run /scripts/seckill.js
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  redis-data:

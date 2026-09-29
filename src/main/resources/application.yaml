@@ -9,9 +9,12 @@ spring:
     hibernate:
       ddl-auto: update
     show-sql: false  #for test concurrency: false
+  data:
+    redis:
+      host: localhost
+      port: 6379
 management:
   health:
-    redis.enabled: false
     rabbit.enabled: false
 server:
     port: 8081

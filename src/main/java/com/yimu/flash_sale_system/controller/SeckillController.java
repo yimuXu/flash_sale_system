@@ -25,4 +25,11 @@ public class SeckillController {
         OrderResponse orderResponse = OrderResponse.fromOrder(seckillService.seckill(productId, userId));
         return ResponseEntity.status(HttpStatus.CREATED).body(orderResponse);
     }
+
+    // Preheat the product for seckill
+    @PostMapping("/admin/seckill/{productId}/preheat")
+    public ResponseEntity<Void> preheatSeckill(@PathVariable Long productId) {
+        seckillService.preheatProduct(productId);
+        return ResponseEntity.noContent().build();
+    }
 }
