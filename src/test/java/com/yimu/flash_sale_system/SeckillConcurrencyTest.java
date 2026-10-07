@@ -1,14 +1,17 @@
 package com.yimu.flash_sale_system;
 
+import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Queue;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -16,19 +19,22 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.amqp.core.AmqpAdmin;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.data.redis.core.RedisCallback;
 import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.orm.ObjectOptimisticLockingFailureException;
 
+import com.yimu.flash_sale_system.config.RabbitConfig;
 import com.yimu.flash_sale_system.entity.Product;
 import com.yimu.flash_sale_system.entity.User;
 import com.yimu.flash_sale_system.entity.UserRoles;
-import com.yimu.flash_sale_system.exception.*;
+import com.yimu.flash_sale_system.exception.DuplicateOrderException;
+import com.yimu.flash_sale_system.exception.OutOfStockException;
 import com.yimu.flash_sale_system.repository.OrderRepository;
 import com.yimu.flash_sale_system.repository.ProductRepository;
 import com.yimu.flash_sale_system.repository.UserRepository;
+import com.yimu.flash_sale_system.service.RedisKeys;
 import com.yimu.flash_sale_system.service.SeckillService;
 
 @SpringBootTest(properties = {
@@ -36,18 +42,24 @@ import com.yimu.flash_sale_system.service.SeckillService;
     "spring.jpa.hibernate.ddl-auto=create-drop",
     "spring.data.redis.database=1"
 })
-
 public class SeckillConcurrencyTest {
     @Autowired SeckillService seckillService;
     @Autowired ProductRepository productRepository;
     @Autowired UserRepository userRepository;
     @Autowired OrderRepository orderRepository;
     @Autowired StringRedisTemplate redis;
+    @Autowired AmqpAdmin amqpAdmin;
+
+    @BeforeEach
+    void clean() {
+        // Redis db 1 only (test db), plus any messages left over from a previous run
+        redis.execute((RedisCallback<Void>) conn -> { conn.serverCommands().flushDb(); return null; });
+        amqpAdmin.purgeQueue(RabbitConfig.QUEUE);
+        amqpAdmin.purgeQueue(RabbitConfig.DLQ);
+    }
 
     @Test
     void shouldNotOversell() throws Exception {
-
-
         int stock = 10, threads = 100;
 
         // 1. prepare data 1 product(stock:10) user :100
@@ -61,6 +73,7 @@ public class SeckillConcurrencyTest {
             userIds.add(userRepository.save(u).getId());
         }
         seckillService.preheatProduct(productId);
+
         // 2. let 100 threads compete
         ExecutorService pool = Executors.newFixedThreadPool(threads);
         CountDownLatch start = new CountDownLatch(1);
@@ -68,12 +81,13 @@ public class SeckillConcurrencyTest {
         AtomicInteger success = new AtomicInteger(), duplicate = new AtomicInteger(),
                       soldOut = new AtomicInteger(), other = new AtomicInteger();
         Map<String, AtomicInteger> errors = new ConcurrentHashMap<>();
+        Queue<String> orderNos = new ConcurrentLinkedQueue<>();   // orderNo of every accepted request
 
         for (Long userId : userIds) {
             pool.submit(() -> {
                 try {
                     start.await();
-                    seckillService.seckill(productId, userId);
+                    orderNos.add(seckillService.seckill(productId, userId));
                     success.incrementAndGet();
                 } catch (OutOfStockException e) {
                     soldOut.incrementAndGet();
@@ -83,38 +97,38 @@ public class SeckillConcurrencyTest {
                     other.incrementAndGet();
                     errors.computeIfAbsent(e.getClass().getSimpleName() + ": " + e.getMessage(),
                             k -> new AtomicInteger()).incrementAndGet();
+                } finally {
+                    done.countDown();
                 }
             });
-        
         }
         start.countDown();   // let all threads proceed
         done.await();
         pool.shutdown();
 
-        // 3. assert
-        int dbStock = productRepository.findById(productId).orElseThrow().getStock();
-        int redisStock = Integer.parseInt(redis.opsForValue().get("seckill:stock:" + productId));
-        long orders = orderRepository.countByProduct_Id(productId);
-
-        System.out.printf("success=%d soldOut=%d duplicate=%d other=%d dbStock=%d redisStock=%d orders=%d%n",
-                success.get(), soldOut.get(), duplicate.get(), other.get(), dbStock, redisStock, orders);
+        // 3. Redis picks the winners synchronously, so this can be asserted right away
+        System.out.printf("success=%d soldOut=%d duplicate=%d other=%d%n",
+                success.get(), soldOut.get(), duplicate.get(), other.get());
         errors.forEach((k, v) -> System.out.println(v + " x " + k));
 
         assertEquals(0, other.get());              // no unexpected errors
         assertEquals(stock, success.get());        // stock should be exactly sold out
+
+        // 4. orders are written asynchronously by the MQ consumer: wait until every accepted order is done
+        await().atMost(Duration.ofSeconds(15)).untilAsserted(() -> {
+            for (String orderNo : orderNos) {
+                assertEquals("SUCCESS", redis.opsForValue().get(RedisKeys.resultKey(orderNo)));
+            }
+        });
+
+        // 5. final state: database, Redis and orders agree
+        int dbStock = productRepository.findById(productId).orElseThrow().getStock();
+        int redisStock = Integer.parseInt(redis.opsForValue().get(RedisKeys.stockKey(productId)));
+        long orders = orderRepository.countByProduct_Id(productId);
+        System.out.printf("dbStock=%d redisStock=%d orders=%d%n", dbStock, redisStock, orders);
+
         assertEquals(0, dbStock);                  // database stock should be 0
         assertEquals(dbStock, redisStock);         // Redis same as database
-        assertEquals(success.get(), orders);       // order num = success
+        assertEquals(stock, orders);               // one order per accepted request
     }
-
-    
-
-    @BeforeEach
-    void cleanRedis() {
-        redis.execute((RedisCallback<Void>) conn -> {
-            conn.serverCommands().flushDb();   // empty 1 not 0
-            return null;
-        });
-    }
-
 }

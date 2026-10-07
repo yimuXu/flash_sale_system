@@ -6,6 +6,7 @@ Environment
 - App:        Spring Boot 4.1.1, Java 21, embedded Tomcat (default 200 threads), HikariCP (default 10 connections)
 - Database:   PostgreSQL 18 (local)
 - Cache:      Redis 7 (Docker)
+- Queue:      RabbitMQ 4 (Docker), phase 3 only: 5 consumer threads, prefetch 10, 3 retries then dead-letter queue
 - Load tool:  k6 (Docker, grafana/k6), scenario "per-vu-iterations": 1000 VUs x 1 request, all fired at once
 - Endpoint:   POST /seckill/{productId}/{userId}, each VU uses a distinct userId
 - Machine:    Windows 11, single host (app, DB, Redis and k6 on the same machine)
@@ -34,9 +35,21 @@ Phase 1 - optimistic locking (@Version), 1 product, N threads fired simultaneous
     2   | Redis + Lua      |  100  |   100   |       0       |   900    |   900 (90%)      | 925 ms   | 777 req/s
     2   | Redis + Lua      | 1000  |  1000   |       0       |    0     |     0 (0%)       | 977 ms   | 707 req/s
     2*  | Redis + Lua      |  100  |   100   |       0       |   900    |   900 (90%)      | 169 ms   | invalid*
+    3   | Redis + RabbitMQ |  100  |   100   |       0       |   900    |   900 (90%)      | 177 ms   | 1798 req/s
+    3   | Redis + RabbitMQ | 1000  |  1000   |       0       |    0     |     0 (0%)       | 299 ms   | 1330 req/s
 
   Oversold in all runs: 0
   Data consistency (phase 2): Redis stock = DB stock = 0, Redis user set size = order count = success count
+
+  How each row was measured
+  - Phase 1 and 2 rows are SINGLE runs. Phase 3 rows are the MEDIAN of 3 warm runs.
+    The phases are therefore not yet measured the same way (see TODO).
+  - In phase 3 "Success" means HTTP 202: the request won the stock in Redis and its order
+    was queued. The order row is written to the database afterwards by the consumer.
+  - "Throughput" is 1000 requests / wall time of the single burst. It shows how fast one
+    burst is cleared, not the sustained request rate the server can hold.
+  - One extra phase 3 run (stock 100) was discarded: 155 requests got "connection refused"
+    before reaching the app. Runs with network errors are not counted. Cause not confirmed.
 
   * Run marked 2* reported negative rates (e.g. -38819 req/s): the Docker VM clock
     jumped during the test, so throughput is invalid and latency is unreliable.
@@ -44,6 +57,22 @@ Phase 1 - optimistic locking (@Version), 1 product, N threads fired simultaneous
 
   "Failed (non-2xx)" is k6's http_req_failed. For a flash sale this mostly counts
   expected business rejections (HTTP 409 sold out / conflict), not server errors.
+
+  Latency of successful requests only (k6 "expected_response:true")
+
+  Phase | Stock | Run             | avg     | p95
+  ------+-------+-----------------+---------+--------
+    2   |  100  | single          | 932 ms  | 1.05 s
+    2*  |  100  | single, invalid | 161 ms  | 259 ms
+    3   |  100  | 1               |  90 ms  | 124 ms
+    3   |  100  | 2               | 126 ms  | 171 ms
+    3   |  100  | 3               | 178 ms  | 334 ms
+    3   |  100  | median of 3     | 126 ms  | 171 ms
+    2   | 1000  | single          | 613 ms  | 977 ms
+    3   | 1000  | 1               | 166 ms  | 265 ms
+    3   | 1000  | 2               | 224 ms  | 299 ms
+    3   | 1000  | 3               | 230 ms  | 363 ms
+    3   | 1000  | median of 3     | 224 ms  | 299 ms
 
 
 3. Findings
@@ -62,10 +91,23 @@ Remaining bottleneck
 - Next step (Phase 3): asynchronous order creation via a message queue - return
   immediately after the Redis check and let a consumer write orders to the DB.
 
+Phase 2 -> Phase 3 (PROVISIONAL - phase 2 baseline must be re-measured first)
+- Stock 1000 (every request wins): p95 977 ms -> 299 ms, average 613 ms -> 224 ms.
+  All 1000 requests return after the Redis check and one publish; the database is
+  written by 5 consumers in the background instead of by 1000 request threads.
+- Stock 100: NOT established. The two phase 2 runs disagree by 5x (925 ms vs 169 ms p95),
+  and the faster one is in the same range as phase 3 (177 ms). With only 100 orders to
+  write, asynchronous order creation may bring little latency gain.
+- In phase 3 a winning request (Redis + publish) is still slower than a sold-out request
+  (Redis only): stock 100 median over all requests was 29-59 ms, winners averaged 126 ms.
+
 TODO
 - Re-run phase 1 with stock 1000 to quantify under-selling at the HTTP level.
-- Re-run the invalid 2* run.
+- Re-measure phase 2 (stock 100 and 1000) with the same method as phase 3, replacing
+  the single runs and the invalid 2* run.
 - Methodology: restart app, 1 warm-up run (discarded), then 3 measured runs, report the median.
+- Record how long the RabbitMQ queue takes to drain after a stock-1000 burst.
+- Find the cause of the intermittent "connection refused" (try server.tomcat.accept-count).
 
 
 ====================================================
@@ -162,3 +204,60 @@ Phase 2* - Redis + Lua, 1000 users, stock 100 (INVALID - clock skew, negative ra
     NETWORK
     data_received..................: 406 kB -15743864.097111113 B/s
     data_sent......................: 114 kB -4421224.236536914 B/s
+
+
+Phase 3 - Redis + RabbitMQ, 1000 users, stock 100 (3 runs, CUSTOM and HTTP sections)
+------------------------------------------------------------------------------------
+  Run 1
+    seckill_sold_out...............: 900    1598.672613/s
+    seckill_success................: 100    177.63029/s
+    http_req_duration..............: avg=55.38ms  min=2.79ms  med=28.65ms  max=185.58ms p(90)=165.46ms p(95)=176.58ms
+      { expected_response:true }...: avg=89.72ms  min=71.11ms med=81.81ms  max=126.17ms p(90)=118.68ms p(95)=124.23ms
+    http_req_failed................: 90.00% 900 out of 1000
+    http_reqs......................: 1000   1776.302903/s
+
+  Run 2
+    seckill_sold_out...............: 900    1618.180876/s
+    seckill_success................: 100    179.797875/s
+    http_req_duration..............: avg=71.06ms  min=2.16ms  med=53.67ms  max=172.66ms p(90)=153.68ms p(95)=165.84ms
+      { expected_response:true }...: avg=126.48ms min=23.74ms med=165.6ms  max=172.66ms p(90)=170.47ms p(95)=171.31ms
+    http_req_failed................: 90.00% 900 out of 1000
+    http_reqs......................: 1000   1797.978751/s
+
+  Run 3
+    seckill_sold_out...............: 900    1702.792542/s
+    seckill_success................: 100    189.199171/s
+    http_req_duration..............: avg=69.08ms  min=2.81ms  med=58.74ms  max=337.94ms p(90)=121.97ms p(95)=180.95ms
+      { expected_response:true }...: avg=178.02ms min=25.85ms med=180.98ms max=337.94ms p(90)=329.56ms p(95)=334.27ms
+    http_req_failed................: 90.00% 900 out of 1000
+    http_reqs......................: 1000   1891.991714/s
+
+  Discarded run (155 x "connection refused")
+    seckill_network................: 155    309.615756/s
+    seckill_sold_out...............: 745    1488.153151/s
+    seckill_success................: 100    199.752101/s
+    http_req_duration..............: avg=66.19ms  min=0s      med=39.55ms  max=335.85ms p(90)=120.89ms p(95)=305.32ms
+      { expected_response:true }...: avg=121.02ms min=60.26ms med=118.66ms max=287.07ms p(90)=186.87ms p(95)=245.81ms
+    http_req_failed................: 90.00% 900 out of 1000
+    http_reqs......................: 1000   1997.521009/s
+
+
+Phase 3 - Redis + RabbitMQ, 1000 users, stock 1000 (3 runs, CUSTOM and HTTP sections)
+-------------------------------------------------------------------------------------
+  Run 1
+    seckill_success................: 1000   1330.030359/s
+    http_req_duration..............: avg=165.88ms min=23.69ms  med=176.93ms max=299.86ms p(90)=244.54ms p(95)=264.6ms
+    http_req_failed................: 0.00%  0 out of 1000
+    http_reqs......................: 1000   1330.030359/s
+
+  Run 2
+    seckill_success................: 1000   1434.961348/s
+    http_req_duration..............: avg=224.12ms min=67ms    med=231.19ms max=372.04ms p(90)=288.25ms p(95)=299.05ms
+    http_req_failed................: 0.00%  0 out of 1000
+    http_reqs......................: 1000   1434.961348/s
+
+  Run 3
+    seckill_success................: 1000   1227.624516/s
+    http_req_duration..............: avg=229.59ms min=40.11ms  med=242.19ms max=392.86ms p(90)=329.44ms p(95)=362.93ms
+    http_req_failed................: 0.00%  0 out of 1000
+    http_reqs......................: 1000   1227.624516/s

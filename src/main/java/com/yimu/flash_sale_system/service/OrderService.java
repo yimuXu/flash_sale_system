@@ -4,6 +4,7 @@ import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
 
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -14,19 +15,23 @@ import com.yimu.flash_sale_system.repository.ProductRepository;
 import com.yimu.flash_sale_system.repository.UserRepository;
 import com.yimu.flash_sale_system.exception.OutOfStockException;
 import com.yimu.flash_sale_system.entity.OrderStatus;
+import com.yimu.flash_sale_system.service.RedisKeys;
 
 @Service
 public class OrderService {
     private final OrderRepository orderRepository;
     private final ProductRepository productRepository;
     private final UserRepository userRepository;
+    private final StringRedisTemplate stringRedisTemplate;
 
     public OrderService(OrderRepository orderRepository,
                         ProductRepository productRepository,
-                        UserRepository userRepository) {
+                        UserRepository userRepository,
+                        StringRedisTemplate stringRedisTemplate) {
         this.orderRepository = orderRepository;
         this.productRepository = productRepository;
         this.userRepository = userRepository;
+        this.stringRedisTemplate = stringRedisTemplate; 
     }
     // --------------buyer-----------------//
     public List<Order> getOrdersByUserId(Long userId) {
@@ -41,7 +46,7 @@ public class OrderService {
     //------------seckill------------//
 
     @Transactional
-    public Order createSeckillOrder(Long userId, Long productId) {
+    public Order createSeckillOrder(Long userId, Long productId,String orderNo) {
         
         int updated = productRepository.decreaseStock(productId);
         if(updated==0){
@@ -52,11 +57,15 @@ public class OrderService {
         order.setUser(userRepository.getReferenceById(userId));
         order.setProduct(productRepository.getReferenceById(productId));
         order.setQuantity(1);
-        order.setOrderNo(UUID.randomUUID().toString());
+        order.setOrderNo(orderNo);
         order.setStatus(OrderStatus.COMPLETED);
         order.setCreatedAt(LocalDateTime.now());
 
         return orderRepository.save(order);
+    }
+
+    public boolean existsByOrderNo(String orderNo) {
+        return orderRepository.existsByOrderNo(orderNo);
     }
 
     // -------------admin-----------------//

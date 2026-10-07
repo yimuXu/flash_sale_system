@@ -22,5 +22,18 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
+  rabbitmq:
+    image: rabbitmq:4-management
+    container_name: flash-sale-rabbitmq
+    ports:
+      - "5672:5672"      # app connection
+      - "15672:15672"    # management interface
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5      
+
 volumes:
   redis-data:
+

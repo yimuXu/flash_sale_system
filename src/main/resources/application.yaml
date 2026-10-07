@@ -13,8 +13,18 @@ spring:
     redis:
       host: localhost
       port: 6379
-management:
-  health:
-    rabbit.enabled: false
+  rabbitmq:
+    host: localhost
+    port: 5672
+    listener:
+      simple:
+        concurrency: 5              # 5 consumer threads
+        prefetch: 10                # Each consumer can prefetch up to 10 messages
+        default-requeue-rejected: false   # Failed messages are not requeued, but sent to the dead-letter queue
+        retry:
+          enabled: true
+          max-attempts: 3
+          initial-interval: 500ms
+
 server:
     port: 8081

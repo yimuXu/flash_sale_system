@@ -1,4 +1,4 @@
-param([int]$Stock = 100, [switch]$Preheat)
+param([int]$Stock = 100, [switch]$NoPreheat)
 
 $psql = "D:\usyd_resource\postgresSQL\bin\psql.exe"
 $env:PGPASSWORD = if ($env:DB_PASSWORD) { $env:DB_PASSWORD } else { "postgres" }

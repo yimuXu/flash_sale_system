@@ -3,6 +3,7 @@ package com.yimu.flash_sale_system.entity;
 import java.time.LocalDateTime;
 
 import jakarta.annotation.Generated;
+import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
@@ -20,6 +21,7 @@ public class Order {
     @GeneratedValue (strategy = GenerationType.IDENTITY)
     private Long id;
     // for idempotency
+    @Column (unique = true)
     private String orderNo;
     @ManyToOne 
     private User user;

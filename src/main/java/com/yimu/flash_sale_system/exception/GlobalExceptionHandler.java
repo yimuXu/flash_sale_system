@@ -1,11 +1,11 @@
 package com.yimu.flash_sale_system.exception;
 
+import org.springframework.amqp.AmqpException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
-import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 @RestControllerAdvice 
 public class GlobalExceptionHandler {
@@ -31,7 +31,7 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler (DataIntegrityViolationException.class)
     public ProblemDetail handleDataIntegrityViolation(DataIntegrityViolationException ex) {
-        return ProblemDetail.forStatusAndDetail(HttpStatus.UNAUTHORIZED, ex.getMessage());
+        return ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, ex.getMessage());
     }
 
     @ExceptionHandler(InvalidCredentialsException.class)
@@ -42,6 +42,11 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(SeckillNotStartedException.class)
     public ProblemDetail handleSeckillNotStarted(SeckillNotStartedException ex) {
         return ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, ex.getMessage());
+    }
+
+    @ExceptionHandler (AmqpException.class)
+    public ProblemDetail handleAmqpException(AmqpException ex) {
+        return ProblemDetail.forStatusAndDetail(HttpStatus.SERVICE_UNAVAILABLE, ex.getMessage());
     }
 
 }
