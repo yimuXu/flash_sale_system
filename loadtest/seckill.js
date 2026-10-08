@@ -18,7 +18,7 @@ export default function () {
   const res = http.post(`http://host.docker.internal:8081/seckill/1/${__VU}`);
 
   if (res.status === 0) networkError.add(1);
-  else if (res.status === 202) success.add(1);
+  else if (res.status === 202 || res.status === 201) success.add(1);
   else if (res.status >= 500) serverError.add(1);
   else if (res.body.includes('out of stock')) soldOut.add(1);
   else if (res.body.includes('Duplicate')) duplicate.add(1);
