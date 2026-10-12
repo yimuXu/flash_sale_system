@@ -8,7 +8,7 @@ Four versions of the same flash-sale endpoint were measured:
   Phase 4  Phase 3 plus a Sentinel rate limit on the endpoint
 
 Sections 1-3 compare phases 1-3 with a single burst of 1000 requests.
-Section 4 measures phases 3 and 4 under sustained load.
+Section 4 measures phases 2, 3 and 4 under sustained load.
 
 
 Environment
@@ -158,8 +158,8 @@ Whole request including connection wait (k6 iteration_duration, avg / p95)
    and the publish to RabbitMQ. Not yet investigated.
 
 
-4. Sustained load and rate limiting (phases 3 and 4)
-----------------------------------------------------
+4. Sustained load and rate limiting (phases 2, 3 and 4)
+-------------------------------------------------------
 Method: k6 "constant-arrival-rate", a fixed number of requests per second for 30 s
 (loadtest/steady.js). Every request uses a different user and the stock is larger than the
 number of requests, so every admitted request wins: Redis check, status write, publish to
@@ -212,13 +212,32 @@ accept-count 1000. Latency is k6 http_req_duration.
   With the limit at 1000/s the 29295 admitted orders were written over 36 s, so the backlog
   stays small.
 
+4d. Phase 2 under the same load (order written in the request, no queue, no rate limit)
+
+  Target rate | Phase 2: served / median / p95 / not sent | Phase 3: served / median / p95 / not sent
+  ------------+-------------------------------------------+------------------------------------------
+     500 /s   |  499 /s / 4.3 ms / 5.8 ms / 0             |  502 /s / 2.7 ms / 3.8 ms / 0
+    1000 /s   |  983 /s / 247 ms / 417 ms / 0             | 1032 /s / 2.9 ms / 5.1 ms / 0
+    2000 /s   |  973 /s / 3.97 s / 4.07 s / 26719         | 2038 /s / 5.3 ms / 436 ms / 20
+
+  - Phase 2 cannot serve more than about 975 requests/s. Each request writes its order before
+    it answers, so the endpoint is only as fast as the database. This matches the consumer
+    write rate measured in 4c (about 950 orders/s).
+  - Phase 3 accepts 2000 requests/s with a 5 ms median and about 2200/s at most, roughly twice
+    the intake of phase 2. At 1000/s its p95 is 5 ms against 417 ms.
+  - The queue does not make the database faster. Orders are still written at about 950/s:
+    phase 3 answers the user first and writes later. Intake above that rate can only be
+    sustained for as long as the backlog is allowed to grow.
+  - After the phase 2 run at 2000/s: 33283 orders, database stock = Redis stock = 30717.
+
 
 5. Limitations
 --------------
 - Everything, including the load generator, runs on one machine, so the components compete
   for CPU and the absolute numbers are specific to this machine.
 - Three runs per data point in sections 1-3. Run-to-run spread is visible in the appendix.
-- Section 4 figures come from a single 30-second run per rate.
+- Section 4 figures come from a single 30-second run per rate. The phase 2 runs were made
+  four days after the phase 3 and 4 runs.
 - A single 1000-request burst measures burst latency, not sustained throughput.
 - Phases 2 and 3 at stock 100 were each measured twice, first with the default accept queue
   and later with 1000. Both were slower the second time by a similar amount (burst rate
@@ -231,11 +250,13 @@ TODO
 - Alternate runs with accept-count 100 and 1000 on one phase to isolate the effect of the queue.
 - Add k6 Trend metrics for res.timings (blocked, connecting, waiting) so the time outside
   http_req_duration can be explained.
-- Run the sustained-load test on phases 1 and 2 to compare all phases on throughput. Phase 2
-  writes orders in the request, so its limit is expected near the consumer rate (~950/s).
+- Run the sustained-load test on phase 1.
 - Repeat each sustained-load rate 3 times, and add 1500/s to narrow down where latency stops
   being flat.
-- Find the cause of the intermittent stalls above 1000 requests/s (start with JVM GC logs).
+- Find the cause of the intermittent stalls above 1000 requests/s. Already ruled out: JVM
+  garbage collection (longest pause 17 ms in a GC log of a 2000/s run) and Redis persistence
+  (no delayed fsync, slowest command 21 ms). Not yet checked: RabbitMQ flow control on the
+  single shared connection, and the load generator / Docker network side.
 
 
 ====================================================
@@ -393,6 +414,14 @@ Section 4 - sustained load, 30 s per run
           dur avg=116.27ms med=5.31ms  p(90)=397.65ms p(95)=435.71ms p(99)=492.9ms  max=668.75ms
   3000/s  success 70546, 2195.8 req/s, dropped_iterations 19455, VUs max 6000
           dur avg=1.47s    med=994.3ms p(90)=3.16s    p(95)=3.41s    p(99)=3.55s    max=3.71s
+
+  Phase 2, no rate limit
+  500/s   success 15001, 498.6 req/s
+          dur avg=4.82ms   med=4.28ms   p(90)=4.92ms  p(95)=5.81ms  p(99)=22ms     max=83.51ms
+  1000/s  success 30001, 982.7 req/s, VUs 203-430
+          dur avg=260.03ms med=246.96ms p(90)=366.7ms p(95)=416.8ms p(99)=440.68ms max=794.27ms
+  2000/s  success 33283, 972.9 req/s, dropped_iterations 26719, VUs max 4000
+          dur avg=3.46s    med=3.97s    p(90)=4.06s   p(95)=4.07s   p(99)=4.12s    max=4.43s
 
   Sentinel limit 1000/s (phase 4)
   500/s   success 15001, 518.0 req/s
