@@ -8,8 +8,11 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-
+import com.alibaba.csp.sentinel.Entry;
+import com.alibaba.csp.sentinel.SphU;
+import com.alibaba.csp.sentinel.slots.block.BlockException;
 import com.yimu.flash_sale_system.dto.SeckillResponse;
+import com.yimu.flash_sale_system.exception.RateLimitedException;
 import com.yimu.flash_sale_system.service.SeckillService;
 import com.yimu.flash_sale_system.service.OrderService;
 
@@ -27,9 +30,13 @@ public class SeckillController {
 
     @PostMapping("/seckill/{productId}/{userId}")
     public ResponseEntity<SeckillResponse> startSeckill(@PathVariable Long productId, @PathVariable Long userId) {
-        String orderNo = seckillService.seckill(productId, userId);
-        SeckillResponse response = new SeckillResponse(orderNo, "PENDING");
-        return ResponseEntity.status(HttpStatus.ACCEPTED).body(response);
+        try(Entry entry = SphU.entry("seckill")) {
+            String orderNo = seckillService.seckill(productId, userId);
+            SeckillResponse response = new SeckillResponse(orderNo, "PENDING");
+            return ResponseEntity.status(HttpStatus.ACCEPTED).body(response);
+        } catch (BlockException e) {
+            throw new RateLimitedException("System busy, please try again later");
+        }
     }
 
     @GetMapping ("/seckill/result/{orderNo}")

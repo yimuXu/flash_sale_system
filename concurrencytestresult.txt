@@ -1,10 +1,14 @@
 FLASH SALE SYSTEM - CONCURRENCY & LOAD TEST RESULTS
 ====================================================
 
-Three versions of the same flash-sale endpoint were measured:
+Four versions of the same flash-sale endpoint were measured:
   Phase 1  Optimistic locking in the database (JPA @Version)
   Phase 2  Stock pre-deduction in Redis with a Lua script, order written to the database synchronously
   Phase 3  Same Redis check, order written asynchronously through RabbitMQ
+  Phase 4  Phase 3 plus a Sentinel rate limit on the endpoint
+
+Sections 1-3 compare phases 1-3 with a single burst of 1000 requests.
+Section 4 measures phases 3 and 4 under sustained load.
 
 
 Environment
@@ -154,11 +158,67 @@ Whole request including connection wait (k6 iteration_duration, avg / p95)
    and the publish to RabbitMQ. Not yet investigated.
 
 
-4. Limitations
+4. Sustained load and rate limiting (phases 3 and 4)
+----------------------------------------------------
+Method: k6 "constant-arrival-rate", a fixed number of requests per second for 30 s
+(loadtest/steady.js). Every request uses a different user and the stock is larger than the
+number of requests, so every admitted request wins: Redis check, status write, publish to
+RabbitMQ. This is the most expensive path. One warm-up run, then ONE run per rate.
+accept-count 1000. Latency is k6 http_req_duration.
+
+4a. Capacity without a rate limit (phase 3)
+
+  Target rate | Served     | Median  | p95     | p99     | Requests k6 could not send
+  ------------+------------+---------+---------+---------+---------------------------
+     500 /s   |  502 /s    | 2.7 ms  | 3.8 ms  | 6.6 ms  |       0
+    1000 /s   | 1032 /s    | 2.9 ms  | 5.1 ms  | 14 ms   |       0
+    2000 /s   | 2038 /s    | 5.3 ms  | 436 ms  | 493 ms  |      20
+    3000 /s   | 2196 /s    | 994 ms  | 3.41 s  | 3.55 s  |   19455
+
+  Latency is flat up to 1000 requests/s. At 2000/s the median is still 5 ms but the system
+  stalls intermittently (p95 436 ms). At 3000/s it is overloaded: it serves about 2200/s,
+  responses take seconds, and the load generator runs out of free virtual users.
+  The rate limit was set to 1000 requests/s, the highest rate measured with flat latency.
+
+4b. With a Sentinel limit of 1000 requests/s (phase 4)
+
+  Target rate | Admitted (202)    | Rejected (429) | Admitted: median / p95 / p99 | Rejected: median / p95 | Could not send
+  ------------+-------------------+----------------+------------------------------+------------------------+---------------
+     500 /s   | 15001 (518 /s)    |       0        | 2.6 ms / 3.8 ms / 7.0 ms     |          -             |       0
+    2000 /s   | 29133 (1004 /s)   |    30868       | 4.0 ms / 27 ms / 319 ms      | 1.5 ms / 7.1 ms        |       0
+    3000 /s   | 29295 (1008 /s)   |    60489       | 8.5 ms / 178 ms / 361 ms     | 1.7 ms / 24 ms         |     217
+
+  Same target rate, without and with the limit (p95 of admitted requests):
+    2000 /s   436 ms -> 27 ms
+    3000 /s   3.41 s -> 178 ms, and every request gets an answer (3088 /s served instead of
+              2196 /s; requests that could not be sent 19455 -> 217)
+
+  Findings
+  - The limiter admits almost exactly the configured rate (1004 and 1008 requests/s).
+  - Below the limit it changes nothing (500/s: p95 3.8 ms with and without).
+  - Above the limit, admitted requests are 16-19x faster at p95 than without a limit, and
+    rejected requests are answered in about 1.5 ms.
+  - The tail is not flat: p99 stays at 320-360 ms for admitted and rejected requests alike,
+    so the intermittent stalls seen at 2000/s without a limit are still there. Their cause
+    is not known.
+  - After the 3000/s run: 29295 orders, database stock = Redis stock = 66705, dead-letter
+    queue empty.
+
+4c. What the queue does under sustained load
+  In the unlimited 3000/s run the endpoint accepted 70546 orders in about 32 s (2196 /s). The
+  consumers wrote them to the database over 74 s (first and last order timestamps), about
+  950 orders/s. The difference waited in RabbitMQ and was written after the load stopped;
+  all 70546 orders were written and the dead-letter queue stayed empty.
+  With the limit at 1000/s the 29295 admitted orders were written over 36 s, so the backlog
+  stays small.
+
+
+5. Limitations
 --------------
 - Everything, including the load generator, runs on one machine, so the components compete
   for CPU and the absolute numbers are specific to this machine.
-- Three runs per data point. Run-to-run spread is visible in the appendix.
+- Three runs per data point in sections 1-3. Run-to-run spread is visible in the appendix.
+- Section 4 figures come from a single 30-second run per rate.
 - A single 1000-request burst measures burst latency, not sustained throughput.
 - Phases 2 and 3 at stock 100 were each measured twice, first with the default accept queue
   and later with 1000. Both were slower the second time by a similar amount (burst rate
@@ -171,12 +231,11 @@ TODO
 - Alternate runs with accept-count 100 and 1000 on one phase to isolate the effect of the queue.
 - Add k6 Trend metrics for res.timings (blocked, connecting, waiting) so the time outside
   http_req_duration can be explained.
-- Compare latency again with a sustained-load scenario when phase 4 is built.
-- A test that can show what the queue is for: more winners than the database can absorb in
-  one burst (for example 5000 users, stock 5000), or a deliberately slow database.
-- Record how long the RabbitMQ queue takes to drain after a stock-1000 burst.
-- Higher concurrency (2000, 3000, 5000 users) for all three phases.
-- A sustained-load scenario (fixed arrival rate for 30-60 s) to measure real throughput.
+- Run the sustained-load test on phases 1 and 2 to compare all phases on throughput. Phase 2
+  writes orders in the request, so its limit is expected near the consumer rate (~950/s).
+- Repeat each sustained-load rate 3 times, and add 1500/s to narrow down where latency stops
+  being flat.
+- Find the cause of the intermittent stalls above 1000 requests/s (start with JVM GC logs).
 
 
 ====================================================
@@ -320,3 +379,27 @@ Superseded early single runs (taken without the warm-up procedure, kept for refe
   Phase 2, stock 100   sold_out 900, success 100, rates negative (Docker VM clock jumped), invalid
          dur avg=77.48ms  min=3.43ms   med=66.12ms  max=278.66ms p(90)=140.59ms p(95)=168.83ms
   The full original output of these four runs is in the git history of this file.
+
+Section 4 - sustained load, 30 s per run
+----------------------------------------
+"dur" is http_req_duration over all requests, "acc" over admitted (202), "lim" over rejected (429).
+
+  No rate limit (phase 3)
+  500/s   success 15000, 502.0 req/s
+          dur avg=2.9ms    med=2.7ms   p(90)=3.3ms    p(95)=3.76ms   p(99)=6.6ms    max=406.29ms
+  1000/s  success 30001, 1032.1 req/s
+          dur avg=3.38ms   med=2.92ms  p(90)=4ms      p(95)=5.14ms   p(99)=14.02ms  max=39.01ms
+  2000/s  success 59981, 2037.8 req/s, dropped_iterations 20
+          dur avg=116.27ms med=5.31ms  p(90)=397.65ms p(95)=435.71ms p(99)=492.9ms  max=668.75ms
+  3000/s  success 70546, 2195.8 req/s, dropped_iterations 19455, VUs max 6000
+          dur avg=1.47s    med=994.3ms p(90)=3.16s    p(95)=3.41s    p(99)=3.55s    max=3.71s
+
+  Sentinel limit 1000/s (phase 4)
+  500/s   success 15001, 518.0 req/s
+          dur avg=2.85ms   med=2.63ms  p(90)=3.28ms   p(95)=3.76ms   p(99)=7.04ms   max=21.42ms
+  2000/s  success 29133, limited 30868, 2067.7 req/s
+          acc avg=14.44ms  med=3.97ms  p(90)=10.75ms  p(95)=26.58ms  p(99)=318.94ms max=601.39ms
+          lim avg=10.57ms  med=1.48ms  p(90)=2.76ms   p(95)=7.1ms    p(99)=354.12ms max=531.55ms
+  3000/s  success 29295, limited 60489, 3088.1 req/s, dropped_iterations 217
+          acc avg=33ms     med=8.54ms  p(90)=91.05ms  p(95)=178.01ms p(99)=361.34ms max=491.41ms
+          lim avg=7.99ms   med=1.72ms  p(90)=8.01ms   p(95)=23.59ms  p(99)=202.99ms max=268.67ms
