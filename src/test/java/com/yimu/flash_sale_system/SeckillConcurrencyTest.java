@@ -22,6 +22,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.data.redis.core.RedisCallback;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.test.annotation.DirtiesContext;
 
 import com.yimu.flash_sale_system.config.RabbitConfig;
 import com.yimu.flash_sale_system.entity.Product;
@@ -40,6 +41,8 @@ import com.yimu.flash_sale_system.service.SeckillService;
     "spring.jpa.hibernate.ddl-auto=create-drop",
     "spring.data.redis.database=1"
 })
+// close the context after this class so its RabbitMQ listeners do not consume other tests' messages
+@DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 public class SeckillConcurrencyTest {
     @Autowired SeckillService seckillService;
     @Autowired ProductRepository productRepository;
@@ -54,6 +57,8 @@ public class SeckillConcurrencyTest {
         redis.execute((RedisCallback<Void>) conn -> { conn.serverCommands().flushDb(); return null; });
         amqpAdmin.purgeQueue(RabbitConfig.QUEUE);
         amqpAdmin.purgeQueue(RabbitConfig.DLQ);
+        amqpAdmin.purgeQueue(RabbitConfig.DELAY_QUEUE);
+        amqpAdmin.purgeQueue(RabbitConfig.TIMEOUT_QUEUE);
     }
 
     @Test

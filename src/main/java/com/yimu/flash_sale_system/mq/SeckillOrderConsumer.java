@@ -3,6 +3,8 @@ package com.yimu.flash_sale_system.mq;
 import java.time.Duration;
 
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
@@ -16,12 +18,16 @@ import com.yimu.flash_sale_system.service.RedisKeys;
 @Component 
 public class SeckillOrderConsumer {
     private  final OrderService orderService;
-
     private final StringRedisTemplate stringRedisTemplate;
+    private final RabbitTemplate rabbitTemplate;
+    @Value("${seckill.payment-timeout:15m}")
+    private Duration paymentTimeout;
 
-    public SeckillOrderConsumer(OrderService orderService, StringRedisTemplate stringRedisTemplate) {
+
+    public SeckillOrderConsumer(OrderService orderService, StringRedisTemplate stringRedisTemplate, RabbitTemplate rabbitTemplate) {
         this.orderService = orderService;
         this.stringRedisTemplate = stringRedisTemplate;
+        this.rabbitTemplate = rabbitTemplate;
     }
 
     @RabbitListener (queues = RabbitConfig.QUEUE)
@@ -37,7 +43,19 @@ public class SeckillOrderConsumer {
             stringRedisTemplate.opsForValue().set(resultKey, "FAILED", Duration.ofMinutes(30));
             return;
         }
+        rabbitTemplate.convertAndSend("", RabbitConfig.DELAY_QUEUE, msg, m -> {
+            m.getMessageProperties().setExpiration(String.valueOf(paymentTimeout.toMillis()));
+            return m;
+        });
         stringRedisTemplate.opsForValue().set(resultKey, "SUCCESS", Duration.ofMinutes(30));
+    }
+
+    @RabbitListener (queues = RabbitConfig.TIMEOUT_QUEUE)
+    public void handleTimeout(SeckillMessage msg) {
+        if (orderService.cancelIfUnpaid(msg.orderNo(),msg.productId())){
+            stringRedisTemplate.opsForValue().increment(RedisKeys.stockKey(msg.productId()));
+        }
+        
     }
 
     @RabbitListener (queues = RabbitConfig.DLQ)

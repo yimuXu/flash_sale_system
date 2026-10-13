@@ -2,7 +2,6 @@ package com.yimu.flash_sale_system.service;
 
 import java.time.LocalDateTime;
 import java.util.List;
-import java.util.UUID;
 
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
@@ -10,12 +9,12 @@ import org.springframework.transaction.annotation.Transactional;
 
 import com.yimu.flash_sale_system.entity.Order;
 import com.yimu.flash_sale_system.exception.ResourceNotFoundException;
+import com.yimu.flash_sale_system.exception.OrderNotPayableException;
 import com.yimu.flash_sale_system.repository.OrderRepository;
 import com.yimu.flash_sale_system.repository.ProductRepository;
 import com.yimu.flash_sale_system.repository.UserRepository;
 import com.yimu.flash_sale_system.exception.OutOfStockException;
 import com.yimu.flash_sale_system.entity.OrderStatus;
-import com.yimu.flash_sale_system.service.RedisKeys;
 
 @Service
 public class OrderService {
@@ -58,10 +57,32 @@ public class OrderService {
         order.setProduct(productRepository.getReferenceById(productId));
         order.setQuantity(1);
         order.setOrderNo(orderNo);
-        order.setStatus(OrderStatus.COMPLETED);
+        order.setStatus(OrderStatus.PENDING);
         order.setCreatedAt(LocalDateTime.now());
 
         return orderRepository.save(order);
+    }
+
+    @Transactional
+    public Order pay(Long userId, String orderNo) {
+        orderRepository.findByOrderNoAndUser_Id(orderNo, userId)
+            .orElseThrow(() -> new ResourceNotFoundException("Order not found"));
+        int updated = orderRepository.changeStatus(orderNo, OrderStatus.PENDING, OrderStatus.PAID, LocalDateTime.now());
+        if (updated == 0) {
+            throw new OrderNotPayableException("Order is not awaiting payment");
+        }
+        return orderRepository.findByOrderNoAndUser_Id(orderNo, userId)
+                .orElseThrow();
+    }
+
+    @Transactional
+    public boolean cancelIfUnpaid(String orderNo, Long productId) {
+        int updated = orderRepository.changeStatus(orderNo, OrderStatus.PENDING, OrderStatus.CANCELLED, LocalDateTime.now());
+        if (updated == 0) {
+            return false;
+        }
+        productRepository.increaseStock(productId);
+        return true;
     }
 
     public boolean existsByOrderNoAndUser_Id(String orderNo, Long userId) {
