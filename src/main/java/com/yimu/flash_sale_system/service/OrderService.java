@@ -64,8 +64,8 @@ public class OrderService {
         return orderRepository.save(order);
     }
 
-    public boolean existsByOrderNo(String orderNo) {
-        return orderRepository.existsByOrderNo(orderNo);
+    public boolean existsByOrderNoAndUser_Id(String orderNo, Long userId) {
+        return orderRepository.existsByOrderNoAndUser_Id(orderNo, userId);
     }
 
     // -------------admin-----------------//

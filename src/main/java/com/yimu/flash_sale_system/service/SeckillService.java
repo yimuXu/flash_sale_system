@@ -4,7 +4,6 @@ import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
 
-import org.springframework.amqp.AmqpException;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
@@ -55,29 +54,28 @@ public class SeckillService {
             throw new DuplicateOrderException("Duplicate order");
         }        
         String orderNo = UUID.randomUUID().toString();
-        stringRedisTemplate.opsForValue().set(RedisKeys.resultKey(orderNo), "PENDING",Duration.ofMinutes(30));
         try {
+            stringRedisTemplate.opsForValue().set(RedisKeys.resultKey(userId,orderNo), "PENDING",Duration.ofMinutes(30));
             rabbitTemplate.convertAndSend(RabbitConfig.EXCHANGE,RabbitConfig.ROUTING_KEY,new SeckillMessage(orderNo,userId,productId));
-            // return orderService.createSeckillOrder(userId, productId);
-        } catch (AmqpException e) {
-            // Rollback stock and user set on failure
+        } catch (RuntimeException e) {
+            // The Lua script already took the stock: give it back on any failure, not only a broker error
             stringRedisTemplate.opsForValue().increment(RedisKeys.stockKey(productId));
             stringRedisTemplate.opsForSet().remove(RedisKeys.usersKey(productId), userId.toString());
-            stringRedisTemplate.delete(RedisKeys.resultKey(orderNo));
+            stringRedisTemplate.delete(RedisKeys.resultKey(userId,orderNo));
             throw e;
         }
         // record the order
         
         return orderNo;
     }
-        public String getSeckillStatus(String orderNo) {
-        
-        String result = stringRedisTemplate.opsForValue().get(RedisKeys.resultKey(orderNo));
+        public String getSeckillStatus(Long userId, String orderNo) {
+
+        String result = stringRedisTemplate.opsForValue().get(RedisKeys.resultKey(userId, orderNo));
         if (result != null) {
             return result;
         }
         // not in redis, check database
-        if (orderRepository.existsByOrderNo(orderNo)) {
+        if (orderRepository.existsByOrderNoAndUser_Id(orderNo, userId)) {
             return "SUCCESS";
         }
         throw new ResourceNotFoundException("Order not found");

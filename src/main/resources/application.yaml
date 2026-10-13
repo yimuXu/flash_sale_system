@@ -34,3 +34,7 @@ server:
 seckill:
   rate-limit:
     qps: 1000
+
+jwt:
+  secret: ${JWT_SECRET:dev-only-secret-do-not-use-in-production-0123456789}
+  expiration-minutes: 60

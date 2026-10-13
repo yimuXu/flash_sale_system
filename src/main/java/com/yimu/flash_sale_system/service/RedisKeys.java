@@ -9,7 +9,7 @@ public class RedisKeys {
         return "seckill:users:" + productId;
     }
 
-    public static String resultKey(String orderNo) {
-        return "seckill:order:" + orderNo;
+    public static String resultKey(Long userId, String orderNo) {
+        return "seckill:order:" + userId + ":" + orderNo;
     }
 }

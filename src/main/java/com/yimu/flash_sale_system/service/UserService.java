@@ -5,11 +5,11 @@ import java.util.Optional;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
-import com.yimu.flash_sale_system.config.SecurityConfig;
 import com.yimu.flash_sale_system.dto.LoginRequest;
 import com.yimu.flash_sale_system.dto.SignupRequest;
 import com.yimu.flash_sale_system.entity.User;
 import com.yimu.flash_sale_system.entity.UserRoles;
+import com.yimu.flash_sale_system.exception.EmailAlreadyRegisteredException;
 import com.yimu.flash_sale_system.exception.InvalidCredentialsException;
 import com.yimu.flash_sale_system.exception.ResourceNotFoundException;
 import com.yimu.flash_sale_system.repository.UserRepository;
@@ -27,7 +27,7 @@ public class UserService {
     public User signup(SignupRequest userRequest) {
         Optional<User> existuser = userRepository.findByEmail(userRequest.getEmail());
         if (existuser.isPresent()) {
-            throw new RuntimeException("User already exists");
+            throw new EmailAlreadyRegisteredException("Email already registered");
         }
         User user = new User();
         user.setEmail(userRequest.getEmail());
@@ -44,7 +44,7 @@ public class UserService {
     }
 
     public User getUserById(Long userId) {
-        return userRepository.findById(userId).orElseThrow(() -> new RuntimeException("User not found"));
+        return userRepository.findById(userId).orElseThrow(() -> new ResourceNotFoundException("User not found"));
     }
 
     public User updateUser(Long userId, SignupRequest userRequest) {

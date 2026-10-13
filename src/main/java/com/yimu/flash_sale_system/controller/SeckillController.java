@@ -3,6 +3,7 @@ package com.yimu.flash_sale_system.controller;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -28,8 +29,8 @@ public class SeckillController {
 
     // Define endpoints for seckill-related operations
 
-    @PostMapping("/seckill/{productId}/{userId}")
-    public ResponseEntity<SeckillResponse> startSeckill(@PathVariable Long productId, @PathVariable Long userId) {
+    @PostMapping("/seckill/{productId}")
+    public ResponseEntity<SeckillResponse> startSeckill(@PathVariable Long productId, @AuthenticationPrincipal Long userId) {
         try(Entry entry = SphU.entry("seckill")) {
             String orderNo = seckillService.seckill(productId, userId);
             SeckillResponse response = new SeckillResponse(orderNo, "PENDING");
@@ -40,8 +41,8 @@ public class SeckillController {
     }
 
     @GetMapping ("/seckill/result/{orderNo}")
-    public ResponseEntity<String> getSeckillResult(@PathVariable String orderNo) {
-        String result = seckillService.getSeckillStatus(orderNo);
+    public ResponseEntity<String> getSeckillResult(@PathVariable String orderNo, @AuthenticationPrincipal Long userId) {
+        String result = seckillService.getSeckillStatus(userId,orderNo);
         if (result != null) {
             return ResponseEntity.ok(result);
         }

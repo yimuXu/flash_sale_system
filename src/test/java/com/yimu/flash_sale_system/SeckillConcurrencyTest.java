@@ -8,10 +8,8 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.Queue;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -81,13 +79,13 @@ public class SeckillConcurrencyTest {
         AtomicInteger success = new AtomicInteger(), duplicate = new AtomicInteger(),
                       soldOut = new AtomicInteger(), other = new AtomicInteger();
         Map<String, AtomicInteger> errors = new ConcurrentHashMap<>();
-        Queue<String> orderNos = new ConcurrentLinkedQueue<>();   // orderNo of every accepted request
+        Map<String, Long> orderOwners = new ConcurrentHashMap<>();   // orderNo -> userId of every accepted request
 
         for (Long userId : userIds) {
             pool.submit(() -> {
                 try {
                     start.await();
-                    orderNos.add(seckillService.seckill(productId, userId));
+                    orderOwners.put(seckillService.seckill(productId, userId), userId);
                     success.incrementAndGet();
                 } catch (OutOfStockException e) {
                     soldOut.incrementAndGet();
@@ -116,8 +114,8 @@ public class SeckillConcurrencyTest {
 
         // 4. orders are written asynchronously by the MQ consumer: wait until every accepted order is done
         await().atMost(Duration.ofSeconds(15)).untilAsserted(() -> {
-            for (String orderNo : orderNos) {
-                assertEquals("SUCCESS", redis.opsForValue().get(RedisKeys.resultKey(orderNo)));
+            for (Map.Entry<String, Long> e : orderOwners.entrySet()) {
+                assertEquals("SUCCESS", redis.opsForValue().get(RedisKeys.resultKey(e.getValue(), e.getKey())));
             }
         });
 

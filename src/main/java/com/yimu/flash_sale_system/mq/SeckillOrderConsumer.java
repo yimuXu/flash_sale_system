@@ -26,12 +26,12 @@ public class SeckillOrderConsumer {
 
     @RabbitListener (queues = RabbitConfig.QUEUE)
     public void handle(SeckillMessage msg) {
-        String resultKey = RedisKeys.resultKey(msg.orderNo());
+        String resultKey = RedisKeys.resultKey(msg.userId(), msg.orderNo());
         try {
             orderService.createSeckillOrder(msg.userId(), msg.productId(), msg.orderNo());
         } catch (DataIntegrityViolationException e) {
             // The order already exists = duplicate delivery, treated as success; otherwise, it is really failed, throw it out to go through retry and dead letter queue
-            if (!orderService.existsByOrderNo(msg.orderNo())) throw e;
+            if (!orderService.existsByOrderNoAndUser_Id(msg.orderNo(), msg.userId())) throw e;
         } catch (OutOfStockException e) {
             // The database is out of stock, indicating that the Redis inventory is more than the database: only mark it as failed, and cannot add the inventory back
             stringRedisTemplate.opsForValue().set(resultKey, "FAILED", Duration.ofMinutes(30));
@@ -44,7 +44,7 @@ public class SeckillOrderConsumer {
     public void handleDeadLetter(SeckillMessage msg) {
         stringRedisTemplate.opsForValue().increment(RedisKeys.stockKey(msg.productId()));
         stringRedisTemplate.opsForSet().remove(RedisKeys.usersKey(msg.productId()), msg.userId().toString());
-        stringRedisTemplate.opsForValue().set(RedisKeys.resultKey(msg.orderNo()), "FAILED", Duration.ofMinutes(30));
+        stringRedisTemplate.opsForValue().set(RedisKeys.resultKey(msg.userId(), msg.orderNo()), "FAILED", Duration.ofMinutes(30));
     }
-
+    
 }
