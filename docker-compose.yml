@@ -32,7 +32,40 @@ services:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
       interval: 10s
       timeout: 5s
-      retries: 5      
+      retries: 5
+
+  postgres:
+    image: postgres:18
+    container_name: flash-sale-postgres
+    profiles: ["full"]
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: flash_sale
+    ports:
+      - "5434:5432"      # host port 5434 avoids clashing with other local PostgreSQL instances (5432, 5433)
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  app:
+    build: .
+    container_name: flash-sale-app
+    profiles: ["full"]
+    ports:
+      - "8081:8081"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/flash_sale
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_RABBITMQ_HOST: rabbitmq
+      SPRING_DOCKER_COMPOSE_ENABLED: "false"
+      JWT_SECRET: ${JWT_SECRET:-dev-only-secret-do-not-use-in-production-0123456789}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
 
 volumes:
   redis-data:
