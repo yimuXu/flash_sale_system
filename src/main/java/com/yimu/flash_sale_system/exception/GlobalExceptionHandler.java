@@ -58,9 +58,16 @@ public class GlobalExceptionHandler {
     public ProblemDetail handleEmailAlreadyRegistered(EmailAlreadyRegisteredException ex) {
         return ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, ex.getMessage());
     }
+
     @ExceptionHandler (OrderNotPayableException.class)
     public ProblemDetail handleOrderNotPayable(OrderNotPayableException ex) {
         return ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, ex.getMessage());
+    }
+
+    @ExceptionHandler (ServiceUnavailableException.class)
+    public ProblemDetail handleServiceUnavailable(ServiceUnavailableException ex) {
+        return ProblemDetail.forStatusAndDetail(HttpStatus.SERVICE_UNAVAILABLE, ex.getMessage());
+
     }
 
 }

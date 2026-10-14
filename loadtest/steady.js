@@ -43,6 +43,7 @@ const otherFail = new Counter('seckill_other');
 const tAccepted = new Trend('t_accepted', true);       // Accepted requests latency
 const tLimited = new Trend('t_limited', true);         // Throttled requests latency
 const unauthorized = new Counter('seckill_unauthorized');   // 401/403: token rejected
+const unavailable = new Counter('seckill_unavailable');     // 503: service unavailable
 
 export default function () {
   // Each request uses a different user: the nth request in the entire test uses user n
@@ -54,6 +55,7 @@ export default function () {
   else if (res.status === 201 || res.status === 202) { success.add(1); tAccepted.add(res.timings.duration); }
   else if (res.status === 429) { limited.add(1); tLimited.add(res.timings.duration); }
   else if (res.status === 401 || res.status === 403) unauthorized.add(1);
+  else if (res.status === 503) unavailable.add(1);
   else if (res.status >= 500) serverError.add(1);
   else if (res.body.includes('out of stock')) soldOut.add(1);
   else if (res.body.includes('Duplicate')) duplicate.add(1);
